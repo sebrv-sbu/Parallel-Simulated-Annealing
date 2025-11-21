@@ -44,6 +44,7 @@
 #include <stdio.h>
 #endif
 
+#include <stdint.h>
 /* following for structures & consts used thruout */
 #ifndef GLOBAL_INCLUDED
 #include <global.h>
@@ -111,13 +112,11 @@ typedef struct
   int    update_S_skip;
   double control; 
   double criterion;   
-#ifdef MPI
   int    mix_interval; 
   unsigned short shmem_flag;
   int glob_interval;
   int ngroups;
   unsigned short score_method;
-#endif   
 
 /* These were marked "Application program must set these." in the code     */
 /* from Greening/Lam; only progname is used at the moment; we kept them    */
@@ -451,6 +450,20 @@ void WriteTimes(double *times);
  ***************************************************************************/
 
 double GenerateMove(void);
+
+/***************************************************************************/
+/*** UpdateControl: each 'interval' number of steps, acceptance stats are **
+ *                  updated here; note that each problem may have specific *
+ *                  needs.  TSP is straight forward collection.            *
+ *                  For LJ problem, we collect                             *
+ *                  acceptance statistics for all particles in the same    *
+ *                  struct, since all parameters are of the same order of  *
+ *                  magnitude in this problem; more complicated cost func- *
+ *                  tions like the fly gene circuit model needs move con-  *
+ *                  trol for each parameter individually; this function    *
+ *                  also prints prolix stuff, if required (-p)             *
+ ***************************************************************************/
+void UpdateControl(uint16_t *m_success);
 
 /*** AcceptMove: sets new energy as the old energy for the next step and ***
  *               keeps track of the number of successful moves             *

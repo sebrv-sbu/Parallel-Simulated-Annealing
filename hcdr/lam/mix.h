@@ -3,7 +3,7 @@
 typedef struct{
   double mean;
   double vari;
-  int success ;
+  uint8_t success ;
 } mean_vari_succ;
 
 MPI_Datatype MPI_Meanvarisucc;

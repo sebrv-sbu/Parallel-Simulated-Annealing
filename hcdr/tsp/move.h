@@ -220,23 +220,7 @@ void InitTSP(FILE *infile);
  *              it then returns the initial temperature to the caller      *
  ***************************************************************************/
 
-double InitMoves(FILE *fp);
-
-/* a move generation function used in move.c, but not lsa.c                */
-
-/***************************************************************************/
-/*** UpdateControl: each 'interval' number of steps, acceptance stats are **
- *                  updated here; note that each problem may have specific *
- *                  needs.  TSP is straight forward collection.            *
- *                  For LJ problem, we collect                             *
- *                  acceptance statistics for all particles in the same    *
- *                  struct, since all parameters are of the same order of  *
- *                  magnitude in this problem; more complicated cost func- *
- *                  tions like the fly gene circuit model needs move con-  *
- *                  trol for each parameter individually; this function    *
- *                  also prints prolix stuff, if required (-p)             *
- ***************************************************************************/
-void UpdateControl(void);
+double InitMoves(FILE *fp, int Tau);
 
 /***************************************************************************/
 /* miscellaneous functions */

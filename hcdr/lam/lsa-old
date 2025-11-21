@@ -11,7 +11,6 @@
  *   tation of the parallel algorithm by John Reinitz              *
  *   Tuning, equilibration and quenchit mode by King-Wai Chu       *
  *   Partly rewritten, extended & documented by Johannes Jaeger    *
- *   Overhauled by Sebastian Ramirez Villarreal                    * 
  *                                                                 *
  *******************************************************************
  *                                                                 *
@@ -54,13 +53,11 @@
 #include <limits.h>                                  /* for integer limits */
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 #include <string.h>
 #include <sys/types.h>                        /* these two are for times() */
 #include <sys/times.h>
 #include <time.h>                                    /* this is for time() */
 #include <unistd.h>          /* for command line option stuff and access() */
-#include <stddef.h>
 
 /* NOTE: do not ever dare to include moves.h in here or in any of the hea- */
 /*       ders below; lsa.c must remain truly problem independent           */
@@ -70,8 +67,10 @@
 #include <random.h>
 #include <mix.h>
 
+#ifdef MPI
 #include <MPI.h>
 #include <mpi.h>
+#endif
 
 /* STATIC VARIABLES ********************************************************/
 
@@ -82,6 +81,7 @@ static char   *outputfile;                      /* name of the output file */
 static char   *statefile;                        /* name of the state file */
 static char   *logfile;                    /* name of the global .log file */
 static char   *landscapefile;                /* filename of landscape file */
+#ifdef MPI
 static char   *l_logfile;                  /* name of the local .llog file */
 static char   *mixlogfile;                 /* name of the mixlog           */
 
@@ -90,6 +90,7 @@ static char   *mixlogfile;                 /* name of the mixlog           */
 static char   *lbfile;               /* name of .lb file (for lower_bound) */
 static char   *ubfile;               /* name of .ub file (for upper_bound) */
 static char   *mbfile;                 /* name of .mb file (for mix_bound) */
+#endif
 
 /* some energy-related variables *******************************************/
 
@@ -109,7 +110,7 @@ static double vari;      /* energy variance, collected from tau last steps */
 static double estimate_mean;              /* Lam estimator for mean energy */
 static double estimate_sd;  /* Lam estimator for energy standard deviation */
 
-static uint8_t    success=0;                 /* number of successful moves */
+static int    success;                       /* number of successful moves */
 #ifdef MPI
 static int    l_success;               /* local number of successful moves */
 #endif
@@ -333,7 +334,6 @@ static double      finish;                     /* wallclock time after run */
 static struct tms *cpu_start;                      /* user time before run */
 static struct tms *cpu_finish;                      /* user time after run */
 
-static uint16_t *m_success;  /* Move Success needed in move.h */
 #ifdef MPI
 /* Parallel Globals only needed in lsa.c */
 int my_group_id;
@@ -342,9 +342,6 @@ int local_frozen = 0; /* As all groups do not communicate, each processor must
 int tot_frozen=0;       /* this will check if all groups are frozen*/
 
 char machine[MPI_MAX_PROCESSOR_NAME];                  /* For machine name */
-
-MPI_Datatype MPI_Meanvarisucc;
-MPI_Op MPI_Meanvarisucc_sum;
 
 #endif
 
@@ -411,7 +408,6 @@ int main(int argc, char **argv )
   MPI_Group_free(my_group);
   MPI_Comm_free(my_comm);
   Meanvarisucc_MPI_Free();
-  free(m_success);
 
   MPI_Finalize();                  /* terminates MPI execution environment */
 #endif
@@ -503,10 +499,15 @@ void Initialize(int argc, char **argv)
 /* program to attempt to restore state even if stateflag = 0. */
   if ( !stateflag ) {
     initial_temp = InitialMove(argc, argv, opt_index, state, &energy );
-   
     S_0 = 1./initial_temp;
   } else{
+#ifdef MPI
+    printf("%d is Restoring\n", myid);
+#endif 
     RestoreState(statefile, state, &energy);
+#ifdef MPI
+    printf("%d is done restoring \n", myid);
+#endif
   }
 /* initialize those static file names that depend on the output file name */
 
@@ -533,8 +534,7 @@ void Initialize(int argc, char **argv)
 
 /* if we're not restarting: do the initial moves for randomizing and ga-   *
  * thering initial statistics                                              */
-  m_success=malloc(sizeof(*m_success));
-  *m_success=0;
+
   if ( !stateflag ){
     InitialLoop();
                     
@@ -544,21 +544,28 @@ void Initialize(int argc, char **argv)
  * which would be rather complicated because of all the stats collected    * 
  * during equilibration; for the exact same reasons we don't write state   *
  * files for tuning either; in case of a restart, we just restore the .log */
-/* Currently, StateWrite is not working - SRV *
- *	2025-11-15                                */
-//  if ( !equil && !bench && !nofile_flag ) {
-//    if ( !stateflag ) {
-//      WriteLog();
-//#ifdef MPI
-//      if ( !tuning )
-//#endif
-//	StateWrite(statefile);  
-// 	} else 
-//#ifdef MPI
-//      printf("%d Restoring Log", myid);
-//#endif
-//      RestoreLog();
-//  }
+
+  if ( !equil && !bench && !nofile_flag ) {
+    if ( !stateflag ) {
+      WriteLog();
+#ifdef MPI
+      if ( !tuning )
+#endif
+	StateWrite(statefile);
+    } else 
+#ifdef MPI
+      printf("%d Restoring Log", myid);
+#endif
+      RestoreLog();
+  }
+  
+#ifdef MPI
+/* if we are in tuning mode: initialize/restore tuning structs */
+  
+  if ( tuning )
+    InitTuning();
+
+#endif
 /*}*/
 }
 
@@ -818,11 +825,12 @@ void InitialLoop(void)
   int         i;                                     /* local loop counter */
 
   double      energy_change;               /* change of energy during move */
-  int success_initial;
 
+#ifdef MPI
   /* will hold mean, vari, and succ when pooling stats */
-  mean_vari_succ mvs;
-  
+  mean_vari_succ mean_vari_succ;
+#endif
+
 
 
 /* randomize initial state; throw out results; DO NOT PARALLELIZE! */
@@ -847,24 +855,18 @@ void InitialLoop(void)
     else if ( (energy_change <= 0.0) || (exp(exp_arg) > RandomReal()) ) {
       energy += energy_change;
       AcceptMove();
-      (*m_success)++;
     } else
       RejectMove();
-#ifdef MPI
-    if (i % proc_tau == proc_tau-1){
-      MPI_Allreduce(MPI_IN_PLACE,m_success,1,MPI_UINT16_T, MPI_SUM, *my_comm);
-      UpdateControl(m_success);
-    }
-#endif
   }   /* end randomize initial state */
   
 /* set all stats to zero, collection starts below */
 
   mean      = 0.0;
   vari      = 0.0;
-  success_initial   = 0;
+  success   = 0;
 
 /* loop to collect initial statistics; this one is parallelized */
+
   for ( i=0; i<proc_init; i++ ) {
   /* make a move: will either return the energy change or FORBIDDEN_MOVE */
     energy_change = GenerateMove();
@@ -886,8 +888,7 @@ void InitialLoop(void)
     else if ( (energy_change <= 0.0) || (exp(exp_arg) > RandomReal()) ) {
       energy += energy_change;
       AcceptMove();
-      (*m_success)++;
-      success_initial++;
+      success++;
     } else
       RejectMove();
 
@@ -895,36 +896,57 @@ void InitialLoop(void)
 
     mean += energy;        
     vari += energy * energy;
-    if (i % proc_tau == proc_tau-1){
-      MPI_Allreduce(MPI_IN_PLACE,m_success,1,MPI_UINT16_T, MPI_SUM, *my_comm);
-      UpdateControl(m_success);
-    }
+
   }
-/************************************************************************
- * Yes these MPI_Allreduces are annoying but we have to do it this      *
- * way. First of all, we are moving towards a model where we only       *
- * use MPI calls in the Optimization code. We should try to make        *
- * it so that the programmer does not have to bother with Parallel      * 
- * shit on the Problem side.                                            * 
- *                                                                      *
- * Second of all, this MPI_Allreduce has to happen for the algorithm    *
- * to work as intended. This initialization step is necessary           *
- * for theta_bar to settle to an appropriate value before starting      *
- * the main algorithm.                                                  *
- *                                                                      *
- * SRV Nov 19 2025                                                      *
- ************************************************************************/
+ 
+#ifdef MPI
+
+/* collect local stats if tuning */
+
+  if ( tuning && nnodes>1 ) {
+    l_mean    = mean;
+    l_vari    = vari;
+    l_success = success;
+  }
+
+/* parallel code: pool initial statistics from all nodes */
+
+  mean_vari_succ.mean    = mean;
+  mean_vari_succ.vari    = vari;
+  mean_vari_succ.success = success;
+
+/* stats from all nodes are summed up here */
+
+  MPI_Allreduce(MPI_IN_PLACE, mean_vari_succ, 1, MPI_Meanvarisucc, MPI_Meanvarisucc_sum,
+		*my_comm);
+  
+  success = (int)nodesuccess[0];         /* success is now global success! */
+
+/* sanity check: have we done the correct number of initial moves? */
+
+  if ( nodesuccess[1] - state->tune.initial_moves )
+    error("InitialLoop: initial moves was %d?!\n", nodesuccess[1]);
+
+/* mean and variance are now summed over all nodes */
+
+  mean = mean_and_vari[0];    
+  vari = mean_and_vari[1];
+
+/* local stats are calculated here (only if tuning) */
+
+  if ( tuning && nnodes>1 ) {
+    l_mean      /= (double)proc_init;
+    l_vari       = l_vari / ((double)proc_init) - l_mean * l_mean;
+    l_acc_ratio  = ((double)l_success) / ((double)proc_init);
+  }
+
+#endif
     
 /* global stats are calculated here */
-  mvs.mean=mean;
-  mvs.vari=vari;
-  MPI_Allreduce(MPI_IN_PLACE, &mvs, 1, MPI_Meanvarisucc, MPI_Meanvarisucc_sum, 
-		*my_comm);
-  MPI_Allreduce(MPI_IN_PLACE, &success_initial, 1, MPI_INT, MPI_SUM, *my_comm);
 
   mean     /= (double)state->tune.initial_moves;
   vari      = vari / ((double)state->tune.initial_moves) - mean * mean;
-  acc_ratio = ((double)success_initial) / ((double)state->tune.initial_moves); 
+  acc_ratio = ((double)success) / ((double)state->tune.initial_moves); 
 
 /* initialize Lam parameters used for calculating Lam estimators */
   
@@ -1276,6 +1298,10 @@ void Loop(void)
 	AcceptMove();
 	success++;
 
+#ifdef MPI
+	if ( tuning && nnodes>1 ) 
+	  l_success++;
+#endif	
       } else {
 	RejectMove();
       }
@@ -1314,15 +1340,16 @@ void Loop(void)
  * lete by now, but since it doesn't seem to do any harm and saves us some *
  * time, we left it in here                */
         if ( !quenchit ) 
+	if ( --skip <= 0 )
 	  UpdateS();      
     }                 /* this is the end of the proc_tau loop */            
     
 /* have done tau moves here: update the 'tau' counter */
-  /* apparently not. Fuck. */
+
     count_tau++;  
 /* calculate mean, variance and acc_ratio for the last tau steps; i is     *
  * passed as an argument for checking if all local moves add up to Tau     */
-    UpdateStats();
+    UpdateStats(i);
 /* check if the stop criterion applies: annealing and tuning runs (that    *
  * aren't stopped by the tuning stop criterion) leave the loop here; equi- *
  * libration runs exit below                                               */
@@ -1341,9 +1368,8 @@ void Loop(void)
 
 /* update Lam stats: estimators for mean, sd and alpha from acc_ratio (we  *
  * don't need this in quenchit mode since the temperature is fixed to 0)   */
-    if ( !quenchit ) {
+    if ( !quenchit ) 
       UpdateParameter(); 
-    }
 #ifdef MPI
 /* tuning code: first update local Lam estimators */
 
@@ -1428,16 +1454,13 @@ void Loop(void)
       WriteLog();                     
 
 /* the state file gets written here every state_write * tau */
-/* Currently StateWrite Not Working */
-      /* SRV 2025-11-15 */
-
-//#ifdef MPI
-//    if ( (count_tau % (state_write*nnodes) == 0) && !equil && !tuning
-//	 && !nofile_flag)
-//#else
-//    if ( (count_tau % state_write == 0) && !equil && !nofile_flag )
-//#endif 
-//           StateWrite(inputfile);  
+#ifdef MPI
+    if ( (count_tau % (state_write*nnodes) == 0) && !equil && !tuning
+	 && !nofile_flag)
+#else
+    if ( (count_tau % state_write == 0) && !equil && !nofile_flag )
+#endif 
+      StateWrite(inputfile); 
 
   }                                /* this is the end of the while(1) loop */
 
@@ -1496,24 +1519,34 @@ void UpdateS(void)
 void UpdateStats()
 {
 #ifdef MPI
-
-  mean_vari_succ mvs;
+  mean_vari_succ mean_vari_succ;
 
 
 /* parallel code: pool statistics from all nodes */
-  mvs.mean    = mean;
-  mvs.vari    = vari;
-  mvs.success = success;
+  mean_vari_succ.mean    = mean;
+  mean_vari_succ.vari    = vari;
+  mean_vari_succ.success = success;
 
-  
-    MPI_Allreduce(MPI_IN_PLACE, &mvs, 1, MPI_Meanvarisucc, MPI_Meanvarisucc_sum, 
+
+    MPI_Allreduce(MPI_IN_PLACE, mean_vari_succ, 1, MPI_Meanvarisucc, MPI_Meanvarisucc_sum, 
 		*my_comm);
-   success = mvs.success;  /* success is now global success! */
-  
-  mean = mvs.mean/Tau;  /* mean and variance are now summed over all nodes */
-  vari = mvs.vari/Tau;
+    /*UNDER CONSTRUCTION*/
+  success = mean_vari_succ.success;  /* success is now global success! */
+
+        /* sanity check: have we done the correct number of initial moves? */
+  if (nodesuccess[1] - state->tune.tau)
+    error("Loop: total moves was %d ?!\n", nodesuccess[1]);
+
+  mean = mean_vari_succ.mean/Tau;  /* mean and variance are now summed over all nodes */
+  vari = mean_vari_succ.vari/Tau
 
 /* local stats are updated below */
+
+  if ( tuning && nnodes>1 ) {
+    l_mean      /=  (double)proc_tau;
+    l_vari      /=  (double)proc_tau;
+    l_acc_ratio  = ((double)l_success) / ((double)proc_tau);
+  }
 
 #else
 
@@ -1523,8 +1556,6 @@ void UpdateStats()
 #endif
 
   acc_ratio = ((double)success) / Tau ;         /* update acceptance ratio */
-  *m_success+= (uint16_t)success;
-  UpdateControl(m_success); /* Here we access UpdateControl if we need it. */
   }
 
 
@@ -1776,13 +1807,18 @@ int Frozen(void)
 
 void DoGlobalMix(void)
 {
-  unsigned char *sendbuf; 
-  unsigned char *recvbuf; /* as per usual. */
+  double *global_lam_msg_send;
+  double *global_lam_msg_recv;
+  double *local_lam_msg_send;
+  double *local_lam_msg_recv; /* not necessary until tuning */
+  long  *send_longbuf;
+  double *send_dblbuf;
+  long  *recv_longbuf;
+  double *recv_dblbuf;
   double score;
   double min_score; /* average estimate mean */
   int i;
-  MPI_Aint padding = (LSTAT_LENGTH + GSTAT_LENGTH)*sizeof(double); 
-  MPI_Aint size;
+  int lsize, dsize; 
   int root_id;
   int dance_id;
   int root_and_dance[2];
@@ -1793,13 +1829,13 @@ void DoGlobalMix(void)
   int lead_partner; 
   int followers=0;
   int follower;
-  MPI_Request root_request;
-  MPI_Status  root_status;
+  MPI_Request root_requests[2];
+  MPI_Status  root_statuses[2];
   MPI_Request *follow_requests;
   MPI_Status  *follow_statuses;
-  MPI_Request msg_request;
-  MPI_Status  msg_status;
-  /* Preparation Phase */ 
+  MPI_Request msg_requests[3];
+  MPI_Status  msg_statuses[3];
+    
   MPI_Reduce(&energy, &score, 1, MPI_DOUBLE, MPI_SUM, 0, *my_comm); /* score based on average energy */
   score=ngroups*score/nnodes;
   if (root_comm != MPI_COMM_NULL){
@@ -1807,7 +1843,8 @@ void DoGlobalMix(void)
     score = exp((min_score-score)*S); 
     /* score=exp((min(energy of group) - min(min of all groups))*(S of group)) */
     AssignDancePartner(ngroups, root_comm, score);
-        MPI_Comm_rank(root_comm, &root_id);
+    MakeGlobalLamMsg(&global_lam_msg_send);
+    MPI_Comm_rank(root_comm, &root_id);
     root_and_dance[0]=root_id;
     root_and_dance[1]=dance_partner[root_id];
   }
@@ -1820,25 +1857,28 @@ void DoGlobalMix(void)
       free(dance_partner);
   } 
   }
-  MakeStateMsg(&sendbuf, padding, &size);
-  MakeGlobalLamMsg(&sendbuf, size);
-  MakeLamMsg(&sendbuf, size);
+    MakeLamMsg(&local_lam_msg_send);
 
   MPI_Bcast(root_and_dance, 2, MPI_INT, 0, *my_comm);
   root_id=root_and_dance[0];
   dance_id=root_and_dance[1];
+  MakeStateMsg(&send_longbuf, &lsize, &send_dblbuf, &dsize);
  
-    
+  MPI_Alloc_mem((MPI_Aint)(sizeof(long)*lsize), MPI_INFO_NULL, &recv_longbuf);
+  MPI_Alloc_mem((MPI_Aint)(sizeof(double)*dsize), MPI_INFO_NULL, &recv_dblbuf);
   MPI_Alloc_mem((MPI_Aint)(sizeof(int)*lam_group_size), MPI_INFO_NULL, &local_ids);
+  MPI_Alloc_mem((MPI_Aint)(sizeof(double)*LSTAT_LENGTH), MPI_INFO_NULL, &local_lam_msg_recv);
+  MPI_Alloc_mem((MPI_Aint)(sizeof(double)*GSTAT_LENGTH), MPI_INFO_NULL, &global_lam_msg_recv);
 
   MPI_Gather(&myid, 1, MPI_INT, local_ids, 1, MPI_INT, 0, *my_comm);
-  if (MPI_COMM_NULL != root_comm){
+      if (MPI_COMM_NULL != root_comm){
     MPI_Alloc_mem((MPI_Aint)(sizeof(MPI_Request)*ngroups), MPI_INFO_NULL, &follow_requests);
     MPI_Alloc_mem((MPI_Aint)(sizeof(MPI_Status)*ngroups),  MPI_INFO_NULL, &follow_statuses);
     MPI_Alloc_mem((MPI_Aint)(sizeof(int*)*ngroups), MPI_INFO_NULL, &follow_partner_ids);
     lead_partner_ids=(int*)malloc(sizeof(int)*lam_group_size);
     if (dance_id!=root_id){
-      MPI_Irecv(lead_partner_ids, lam_group_size, MPI_INT, dance_partner[root_id], 3*dance_partner[root_id], root_comm, &root_request);
+      MPI_Irecv(lead_partner_ids, lam_group_size, MPI_INT, dance_partner[root_id], 3*dance_partner[root_id], root_comm, &root_requests[0]);
+      MPI_Irecv(global_lam_msg_recv, GSTAT_LENGTH, MPI_DOUBLE, dance_partner[root_id], 3*dance_partner[root_id]+1, root_comm, &root_requests[1]);
       MPI_Send(local_ids, lam_group_size, MPI_INT, dance_partner[root_id], 3*dance_partner[root_id]+2, root_comm);
     }
 
@@ -1846,6 +1886,7 @@ void DoGlobalMix(void)
       if (i != root_id && dance_partner[i] == root_id){
         MPI_Alloc_mem((MPI_Aint)(sizeof(int)*lam_group_size), MPI_INFO_NULL, &follow_partner_ids[followers]);
         MPI_Send(local_ids, lam_group_size, MPI_INT,i, 3*root_id, root_comm);
+        MPI_Send(global_lam_msg_send, GSTAT_LENGTH, MPI_DOUBLE, i, 3*root_id+1, root_comm);
         MPI_Irecv(follow_partner_ids[followers], lam_group_size, MPI_INT, i, 3*root_id+2, root_comm, &follow_requests[followers]);
         followers++;
       }
@@ -1853,12 +1894,10 @@ void DoGlobalMix(void)
       for (i=0; i<lam_group_size; i++)
         lead_partner_ids[i]=local_ids[i];
     }
-    else{
-      MPI_Wait(&root_request, &root_status);
-      }
-    for (i=0; i<followers; i++){
+    else
+      MPI_Waitall(2, root_requests, root_statuses);
+    for (i=0; i<followers; i++)
       MPI_Wait(&follow_requests[i], &follow_statuses[i]);
-    }
       }
   else{
     MPI_Alloc_mem((MPI_Aint)(sizeof(int*)*ngroups), MPI_INFO_NULL, &follow_partner_ids);
@@ -1876,31 +1915,32 @@ void DoGlobalMix(void)
    * followers, proc 2 gets [0][followers]->that address+followers (may go into [1][0]) and so on.
    * Transposing this as a matrix would maybe be possible, but there are then memory alignment
    * issues to consider, so this is the simplest solution. */
-    MPI_Free_mem(local_ids);
-
-    /* Message Passing Phase */
-  MPI_Aint msg_size=size+LSTAT_LENGTH*sizeof(double)+GSTAT_LENGTH*sizeof(double);
+    free(local_ids);
   if (dance_id !=root_id){
-    MPI_Alloc_mem(msg_size, MPI_INFO_NULL, &recvbuf);
-//    printf("DEBUG %d receiving %ld bytes to %d tag=%d\n", myid, (long)msg_size, lead_partner, myid);
-    MPI_Irecv(recvbuf, msg_size, MPI_BYTE,  lead_partner, 
-    myid, MPI_COMM_WORLD, &msg_request);
-    for(i=0; i<followers; i++){
-//      printf("DEBUG %d sending %ld bytes to %d tag=%d\n", myid, (long)msg_size, follow_partners[i], follow_partners[i]);
-      MPI_Send(sendbuf, msg_size, MPI_BYTE, follow_partners[i], 
-      follow_partners[i], MPI_COMM_WORLD);
+        MPI_Bcast(global_lam_msg_recv, GSTAT_LENGTH, MPI_DOUBLE, 0, *my_comm);
+    AcceptGlobalLamMsg(global_lam_msg_recv);
+        MPI_Irecv(local_lam_msg_recv, LSTAT_LENGTH, MPI_DOUBLE, lead_partner, 3*myid, MPI_COMM_WORLD, &msg_requests[0]);
+    MPI_Irecv(recv_longbuf, lsize, MPI_LONG,  lead_partner, 3*myid+1, MPI_COMM_WORLD, &msg_requests[1]);
+    MPI_Irecv(recv_dblbuf, dsize, MPI_DOUBLE,  lead_partner, 3*myid+2, MPI_COMM_WORLD, &msg_requests[2]);
+        for(i=0; i<followers; i++){
+           MPI_Send(local_lam_msg_send, LSTAT_LENGTH, MPI_DOUBLE, follow_partners[i], 3*follow_partners[i], MPI_COMM_WORLD);
+      MPI_Send(send_longbuf, lsize, MPI_LONG,  follow_partners[i], 3*follow_partners[i]+1, MPI_COMM_WORLD);
+      MPI_Send(send_dblbuf, dsize, MPI_DOUBLE, follow_partners[i], 3*follow_partners[i]+2, MPI_COMM_WORLD);
     }
-        MPI_Wait(&msg_request, &msg_status);
-        AcceptGlobalLamMsg(&recvbuf, size);
-        AcceptLamMsg(&recvbuf, size);
-        AcceptStateMsg(&recvbuf);
-        MPI_Free_mem(recvbuf);
+        MPI_Waitall(3, msg_requests, msg_statuses);
+        AcceptLamMsg(local_lam_msg_recv);
+    AcceptStateMsg(recv_longbuf, recv_dblbuf);
       }  
   else{
         for(i=0; i<followers; i++){
-//printf("DEBUG %d sending %ld bytes to %d tag=%d\n", myid, (long)msg_size, follow_partners[i], follow_partners[i]);
-      MPI_Send(sendbuf, msg_size, MPI_BYTE, follow_partners[i], follow_partners[i], MPI_COMM_WORLD);
+      MPI_Send(local_lam_msg_send, LSTAT_LENGTH, MPI_DOUBLE, follow_partners[i], 3*follow_partners[i], MPI_COMM_WORLD);
+      MPI_Send(send_longbuf, lsize, MPI_LONG,  follow_partners[i], 3*follow_partners[i]+1, MPI_COMM_WORLD);
+      MPI_Send(send_dblbuf, dsize, MPI_DOUBLE, follow_partners[i], 3*follow_partners[i]+2, MPI_COMM_WORLD);
     }
+        MPI_Free_mem(global_lam_msg_recv);
+    MPI_Free_mem(local_lam_msg_recv);
+    MPI_Free_mem(recv_longbuf);
+    MPI_Free_mem(recv_dblbuf);
   }
   
   
@@ -1908,11 +1948,13 @@ void DoGlobalMix(void)
     free(lead_partner_ids);
     MPI_Free_mem(follow_requests);
     MPI_Free_mem(follow_statuses);
+    MPI_Free_mem(global_lam_msg_send);
   }
   
   MPI_Free_mem(follow_partner_ids);
   /* We need all processes to have finished reading from windows */
-  MPI_Free_mem(sendbuf);
+  MPI_Free_mem(send_longbuf);
+    MPI_Free_mem(send_dblbuf);
     }
 
 void DoLocalMix(void)
@@ -1924,48 +1966,71 @@ void DoLocalMix(void)
 
 /* buffers for sending/receiving Lam stats at mix */
 
+  double *sendbuf;
+  double *recvbuf;
+
 /* buffers for send/recv move state from/to move(s).c (incl. sizes) */
 
-  MPI_Aint padding = LSTAT_LENGTH*sizeof(double);
-  MPI_Aint size;
-/* We need to tell move.c to save enough space
-  to pack one more double at the end of its code */
+  int    lsize;
+  int    dsize;
 
+  long   *recv_longbuf;
+  double *recv_doublebuf;
 
-  unsigned char *recvbuf;
-
-  unsigned char *sendbuf;
+  long   *send_longbuf;
+  double *send_doublebuf;
 
 
 
 /* MPI status and handle (request) arrays */
 
-  /* During optimizations, we are only sending one message now so *
-   * we do not need these to be arrays anymore SRV  2025-11-15    */
-  MPI_Status    status;       /* status array of the MPI_Waitall function */
-  MPI_Request   request;           /* handle array for receiving messages */
+  MPI_Status    *status;       /* status array of the MPI_Waitall function */
+  MPI_Request   *request;           /* handle array for receiving messages */
 
-   
+  
+  request   = (MPI_Request *)calloc(3, sizeof(MPI_Request));
+  status    =  (MPI_Status *)calloc(3, sizeof(MPI_Status));
     AssignDancePartner(lam_group_size, *my_comm, exp((estimate_mean-energy)*S));
 /* get move state from move(s).c and collect local Lam stats for sending */
-  MakeStateMsg(&sendbuf, padding, &size);
-  MakeLamMsg(&sendbuf, size);
+
+  MakeStateMsg(&send_longbuf, &lsize, &send_doublebuf, &dsize);
+  MakeLamMsg(&sendbuf);
 
 /* if I'm not dancing with myself: receive new state and Lam stats         */
   
   if (dance_partner[my_group_id] != my_group_id) {
 
 /* allocate receive buffers for message; receive buffers need to be of the *
- * same length as the sending buffers                                        */
-      MPI_Alloc_mem((MPI_Aint)(size+sizeof(double)),MPI_INFO_NULL, &recvbuf);
+ * same length as the sending buffers                                      */
+      MPI_Alloc_mem((MPI_Aint)(lsize*sizeof(long)),MPI_INFO_NULL, &recv_longbuf);
+    MPI_Alloc_mem((MPI_Aint)(dsize*sizeof(double)),MPI_INFO_NULL, &recv_doublebuf);
+    if ( tuning && lam_group_size>1 )
+      MPI_Alloc_mem((MPI_Aint)(LSTAT_LENGTH_TUNE*sizeof(double)), MPI_INFO_NULL, &recvbuf);
+    else
+      MPI_Alloc_mem((MPI_Aint)(LSTAT_LENGTH*sizeof(double)), MPI_INFO_NULL, &recvbuf);
 
 
 /* MPI_Irecv is a non-blocking receive which allows a process that is      *
  * waiting to receive to send out its message while waiting i.e. we post   *
  * the receive now, check for reception after send (using MPI_Waitall)     */
 
-      MPI_Irecv(recvbuf, size+sizeof(double), MPI_BYTE, dance_partner[my_group_id],
-		dance_partner[my_group_id], *my_comm, &request);
+    MPI_Irecv(recv_doublebuf, dsize, MPI_DOUBLE, dance_partner[my_group_id],
+	      dance_partner[my_group_id], *my_comm, &request[0]);
+    MPI_Irecv(recv_longbuf,   lsize, MPI_LONG,   dance_partner[my_group_id],
+	      dance_partner[my_group_id], *my_comm, &request[1]);
+
+/* the length of the Lam statistics message depends on if we're tuning or  *
+ * not (local stats are only sent when tuning)                             */
+
+    
+    if ( tuning && lam_group_size>1 ){
+      MPI_Irecv(recvbuf, LSTAT_LENGTH_TUNE, MPI_DOUBLE, dance_partner[my_group_id],
+		dance_partner[my_group_id], *my_comm, &request[2]);
+    }
+    else{
+      MPI_Irecv(recvbuf, LSTAT_LENGTH,      MPI_DOUBLE, dance_partner[my_group_id],
+		dance_partner[my_group_id], *my_comm, &request[2]);
+    }
   } 
 
 /* send messages to dance partners, if requested */
@@ -1973,7 +2038,14 @@ void DoLocalMix(void)
   
   for (i=0; i<lam_group_size; i++) 
     if ( (dance_partner[i] == my_group_id) && (i != my_group_id) ) {
-      MPI_Send(sendbuf, (size+sizeof(double)),MPI_BYTE, i, my_group_id, *my_comm);
+      MPI_Send(send_doublebuf, dsize, MPI_DOUBLE, i, my_group_id, *my_comm);
+      MPI_Send(send_longbuf,   lsize, MPI_LONG,   i, my_group_id, *my_comm);
+      if ( tuning && lam_group_size>1 )
+	    MPI_Send(sendbuf, LSTAT_LENGTH_TUNE, MPI_DOUBLE, i, my_group_id, 
+		  *my_comm);
+      else
+	    MPI_Send(sendbuf, LSTAT_LENGTH,      MPI_DOUBLE, i, my_group_id, 
+		  *my_comm);
     } 
      
   
@@ -1982,16 +2054,22 @@ void DoLocalMix(void)
  * state in move(s).c and the Lam stats in lsa.c                           */
 
   if (dance_partner[my_group_id] != my_group_id) { 
-    MPI_Wait(&request,&status);
-    AcceptStateMsg(&recvbuf);
-    AcceptLamMsg(&recvbuf, size);            
-    MPI_Free_mem(recvbuf);
+    MPI_Waitall(3,request,status);
+    AcceptStateMsg(recv_longbuf, recv_doublebuf);
+    AcceptLamMsg(recvbuf);            
+  
   }
 
   
 /* clean up message buffers and MPI arrays ... */
 
+  MPI_Free_mem(send_longbuf);
+  MPI_Free_mem(send_doublebuf);
   MPI_Free_mem(sendbuf);
+
+  free(request);
+  free(status);
+
 /* ... and the probability array */
 
     }
@@ -1999,9 +2077,8 @@ void DoLocalMix(void)
 void DoMix(void){
   count_mix++;
 
-  if (count_mix % glob_interval){
+  if (count_mix % glob_interval)
     DoLocalMix();
-  }
   else{
     /* checks if some group is frozen, and if so returns. */
     MPI_Allreduce(&local_frozen, &tot_frozen, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -2117,128 +2194,164 @@ void AssignDancePartner(int nodesInMix, MPI_Comm comm, double score){
 /*** MakeLamMsg: packages local Lam stats into send buffer *****************
  ***************************************************************************/
 
-void MakeLamMsg(unsigned char **sendbuf, MPI_Aint size)
+void MakeLamMsg(double **sendbuf)
 {
-  /* See message under MakeGlobalLamMsg - SRV 2025-11-15 */
-  memcpy(*sendbuf+size, &energy, sizeof(double));
+  if ( tuning && nnodes>1 ) 
+    MPI_Alloc_mem((MPI_Aint)(sizeof(double)*LSTAT_LENGTH_TUNE),MPI_INFO_NULL, sendbuf);
+  else
+    MPI_Alloc_mem((sizeof(double)*LSTAT_LENGTH),MPI_INFO_NULL, sendbuf);
+
+  (*sendbuf)[0]   = energy;
+  
+  if ( tuning && nnodes>1 ) {
+
+    (*sendbuf)[1]   = l_estimate_mean_l;
+    (*sendbuf)[2]   = l_estimate_mean_u;
+    (*sendbuf)[3]   = l_estimate_sd;
+
+    (*sendbuf)[4]   = l_usyy_l;
+    (*sendbuf)[5]   = l_usxy_l;
+    (*sendbuf)[6]   = l_usy_l;
+    (*sendbuf)[7]   = l_usx_l; 
+    (*sendbuf)[8]   = l_usxx_l; 
+    (*sendbuf)[9]   = l_usum_l;
+  
+    (*sendbuf)[10]  = l_usyy_u;
+    (*sendbuf)[11]  = l_usxy_u;
+    (*sendbuf)[12]  = l_usy_u;
+    (*sendbuf)[13]  = l_usx_u; 
+    (*sendbuf)[14]  = l_usxx_u; 
+    (*sendbuf)[15]  = l_usum_u;
+
+    (*sendbuf)[16]  = l_A_l; 
+    (*sendbuf)[17]  = l_B_l;
+  
+    (*sendbuf)[18]  = l_A_u; 
+    (*sendbuf)[19]  = l_B_u;
+  
+    (*sendbuf)[20]  = l_vsyy; 
+    (*sendbuf)[21]  = l_vsxy; 
+    (*sendbuf)[22]  = l_vsy;
+    (*sendbuf)[23]  = l_vsx; 
+    (*sendbuf)[24]  = l_vsxx; 
+    (*sendbuf)[25]  = l_vsum;
+  
+    (*sendbuf)[26]  = l_D; 
+    (*sendbuf)[27]  = l_E; 
+
+  }
 }
 
-void MakeGlobalLamMsg(unsigned char **sendbuf, MPI_Aint size){
-  /* All of this is neccessary to reduce number * 
-   * of messages being sent. Method before did  *
-   * not work for heterogenous arrays so now we *
-   * get to do some caveman memory shit.        *
-   * SRV 2025-11-15                             */
-    unsigned char *globbuf = *sendbuf + size + LSTAT_LENGTH * sizeof(double);
-    memcpy(globbuf   , &S, sizeof(double));
-    globbuf+=sizeof(double);
+void MakeGlobalLamMsg(double **sendbuf){
+    MPI_Alloc_mem((MPI_Aint)(GSTAT_LENGTH*sizeof(double)),MPI_INFO_NULL, sendbuf);
 
-    memcpy(globbuf, &estimate_mean, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &estimate_sd, sizeof(double));
-    globbuf+=sizeof(double);
+    (*sendbuf)[0]   = S;
 
-    memcpy(globbuf, &usyy, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &usxy, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &usy, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &usx, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &usxx, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &usum, sizeof(double));
-    globbuf+=sizeof(double);
+    (*sendbuf)[1]   = estimate_mean;
+    (*sendbuf)[2]   = estimate_sd;
 
-    memcpy(globbuf, &A, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &B, sizeof(double));
-    globbuf+=sizeof(double);
+    (*sendbuf)[3]   = usyy;
+    (*sendbuf)[4]   = usxy;
+    (*sendbuf)[5]   = usy;
+    (*sendbuf)[6]   = usx;
+    (*sendbuf)[7]   = usxx;
+    (*sendbuf)[8]   = usum;
+
+    (*sendbuf)[9]   = A;
+    (*sendbuf)[10]  = B;
 
 
-    memcpy(globbuf, &vsyy, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &vsxy, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &vsy, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &vsx, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &vsxx, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &vsum, sizeof(double));
-    globbuf+=sizeof(double);
+    (*sendbuf)[11]  = vsyy;
+    (*sendbuf)[12]  = vsxy;
+    (*sendbuf)[13]  = vsy;
+    (*sendbuf)[14]  = vsx;
+    (*sendbuf)[15]  = vsxx;
+    (*sendbuf)[16]  = vsum;
 
-    memcpy(globbuf, &D, sizeof(double));
-    globbuf+=sizeof(double);
-    memcpy(globbuf, &E, sizeof(double));
-    globbuf+=sizeof(double);
+    (*sendbuf)[17]  = D;
+    (*sendbuf)[18]  = E;
 
-    memcpy(globbuf, &acc_ratio, sizeof(double));
-    globbuf+=sizeof(double);
+    (*sendbuf)[19]  = acc_ratio;
   }
 
 
 /*** AcceptLamMsg: receives new energy and Lam stats upon mixing ***********
  ***************************************************************************/
 
-void AcceptLamMsg(unsigned char **recvbuf, MPI_Aint size)
+void AcceptLamMsg(double *recvbuf)
 {
-  memcpy(&energy, *recvbuf+size, sizeof(double));
+  energy = recvbuf[0];
+  
+  if ( tuning && nnodes>1 ) {
+
+    l_estimate_mean_l = recvbuf[1];
+    l_estimate_mean_u = recvbuf[2];
+    l_estimate_sd     = recvbuf[3];
+
+    l_usyy_l = recvbuf[4];   
+    l_usxy_l = recvbuf[5];   
+    l_usy_l  = recvbuf[6];
+    l_usx_l  = recvbuf[7]; 
+    l_usxx_l = recvbuf[8]; 
+    l_usum_l = recvbuf[9];
+  
+    l_usyy_u = recvbuf[10];   
+    l_usxy_u = recvbuf[11];   
+    l_usy_u  = recvbuf[12];
+    l_usx_u  = recvbuf[13]; 
+    l_usxx_u = recvbuf[14]; 
+    l_usum_u = recvbuf[15];
+  
+    l_A_l = recvbuf[16]; 
+    l_B_l = recvbuf[17];
+    
+    l_A_u = recvbuf[18]; 
+    l_B_u = recvbuf[19];
+  
+    l_vsyy = recvbuf[20]; 
+    l_vsxy = recvbuf[21]; 
+    l_vsy  = recvbuf[22];
+    l_vsx  = recvbuf[23]; 
+    l_vsxx = recvbuf[24]; 
+    l_vsum = recvbuf[25];
+  
+    l_D = recvbuf[26]; 
+    l_E = recvbuf[27];
+ 
+  }
+  MPI_Free_mem(recvbuf);
 
 }
 #ifdef MPI
-void AcceptGlobalLamMsg(unsigned char**recvbuf, MPI_Aint size){
-  unsigned char *globbuf=*recvbuf + size + LSTAT_LENGTH*sizeof(double);
+void AcceptGlobalLamMsg(double *recvbuf){
+  S = recvbuf[0];
 
-  memcpy(&S, globbuf, sizeof(double));
-  globbuf += sizeof(double);
+  estimate_mean = recvbuf[1];
+  estimate_sd   = recvbuf[2];
 
-  memcpy(&estimate_mean, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&estimate_sd  , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-
-  memcpy(&usyy, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&usxy, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&usy , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&usx , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&usxx, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&usum, globbuf, sizeof(double));
-  globbuf += sizeof(double);
+  usyy = recvbuf[3];   
+  usxy = recvbuf[4];   
+  usy  = recvbuf[5];
+  usx  = recvbuf[6]; 
+  usxx = recvbuf[7]; 
+  usum = recvbuf[8];
   
-  memcpy(&A   , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&B   , globbuf, sizeof(double));
-  globbuf += sizeof(double);
+  A    = recvbuf[9]; 
+  B    = recvbuf[10];
     
   
-  memcpy(&vsyy, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&vsxy, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&vsy , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&vsx , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&vsxx, globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&vsum, globbuf, sizeof(double));
-  globbuf += sizeof(double);
+  vsyy = recvbuf[11];   
+  vsxy = recvbuf[12]; 
+  vsy  = recvbuf[13];
+  vsx  = recvbuf[14]; 
+  vsxx = recvbuf[15]; 
+  vsum = recvbuf[16];
   
-  memcpy(&D   , globbuf, sizeof(double));
-  globbuf += sizeof(double);
-  memcpy(&E   , globbuf, sizeof(double));
-  globbuf += sizeof(double);
+  D    = recvbuf[17]; 
+  E    = recvbuf[18];
 
-  memcpy(&acc_ratio , globbuf, sizeof(double));
-  globbuf += sizeof(double);
+  acc_ratio  = recvbuf[19];
+  MPI_Free_mem(recvbuf);
   }
 
 #endif
@@ -2611,7 +2724,6 @@ void FixTLoop(void)
 #endif
 
   double energy_change;                                   /* local Delta E */
-  uint16_t m_success=0;
 
 /* array(s) to store energies */
 
@@ -2715,7 +2827,7 @@ void FixTLoop(void)
   for (i=0; i < equil_param.fix_T_skip; i++) {
 
 /* randomize initial state; throw out results; DO NOT PARALLELIZE! */
-/* CURRENTLY NON-FUNCTIONAL: FIX THIS BEFORE USING EQUIL */
+
     energy_change = GenerateMove();
     
 /* Metropolis stuff here; we usually want FORBIDDEN_MOVE to be very large  *
@@ -3661,13 +3773,12 @@ char** extract_string_set_from_char_list(char* list, int length_list, int *lengt
 }
 #ifdef MPI
 void Meanvarisucc_Sum(void *in, void *inout, int *len, MPI_Datatype *dtype){
-  mean_vari_succ *a = (mean_vari_succ *)in;
-  mean_vari_succ *b = (mean_vari_succ *)inout;
-
   for (int i =0; i<*len; ++i){
-    b[i].mean +=  a[i].mean;
-    b[i].vari +=  a[i].vari;
-    b[i].success += a[i].success;
+    inout->mean = inout->mean + in->mean;
+    inout->vari = inout->vari + in->vari;
+    inout->success = inout->success + in->success;
+    in++;
+    inout++;
   }
 }
 
@@ -3677,9 +3788,9 @@ void Meanvarisucc_MPI_Init(){
   offsets[0] = offsetof(mean_vari_succ, mean);
   offsets[1] = offsetof(mean_vari_succ, vari);
   offsets[2] = offsetof(mean_vari_succ, success);
-  MPI_Datatype types[3]={MPI_DOUBLE, MPI_DOUBLE, MPI_UINT8_T};
+  MPI_Datatype types[3]={MPI_DOUBLE, MPI_DOUBLE, MPI_INT};
 
-  MPI_Type_create_struct(3,blocklengths,offsets, types, &MPI_Meanvarisucc);
+  MPI_Type_create_struct(2,blocklengths,offsets, types, &MPI_Meanvarisucc);
   MPI_Type_commit(&MPI_Meanvarisucc);
 
   MPI_Op_create(Meanvarisucc_Sum, 1, &MPI_Meanvarisucc_sum);

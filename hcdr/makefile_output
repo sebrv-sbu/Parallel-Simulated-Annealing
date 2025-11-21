@@ -1,0 +1,48 @@
+rm -f */core* */*.o 
+rm -f tsp/tsp_sa tsp/tsp_sa.mpi
+rm -f tsp/tsplibconvert
+rm -f tsp/tspdistance
+rm -f tsp/calc_ave_error_bar
+rm -f tsp/curve_fit
+rm -f tsp/printscore
+rm -f lam/gen_deviates
+rm -f tsp/Makefile
+cd tsp && make -f basic.mk Makefile
+make[1]: Entering directory '/gpfs/home/sebramirezvi/hierarchical_tsp_select_opts_3/tsp'
+rm -f Makefile
+cp basic.mk Makefile
+echo "#Automatically generated dependencies list#" >> Makefile
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -M `ls *.c` >> Makefile
+chmod -w Makefile
+make[1]: Leaving directory '/gpfs/home/sebramirezvi/hierarchical_tsp_select_opts_3/tsp'
+make[1]: Entering directory '/gpfs/home/sebramirezvi/hierarchical_tsp_select_opts_3/lam'
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -c deviates.c -o deviates.o
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include  -c distributions.c 
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -c error.c -o error.o
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -c random.c -o random.o
+mpicc -o gen_deviates -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include deviates.o distributions.o error.o random.o -lm
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -c lsa.c -o lsa.o
+mpicc -c -o lsa-mpi.o -O3 -DNDEBUG -fcommon  -DMPI -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include lsa.c
+make[1]: Leaving directory '/gpfs/home/sebramirezvi/hierarchical_tsp_select_opts_3/lam'
+make[1]: Entering directory '/gpfs/home/sebramirezvi/hierarchical_tsp_select_opts_3/tsp'
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include   -c -o edge_wt.o edge_wt.c
+edge_wt.c:85:6: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
+   85 | void swap_inplace(unsigned short left, unsigned short right){
+      |      ^~~~~~~~~~~~
+mpicc -c -o move-mpi.o -O3 -DNDEBUG -fcommon  -DMPI -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include move.c
+move.c: In function ‘tour_allocate’:
+move.c:144:16: warning: assignment to ‘int *’ from incompatible pointer type ‘short unsigned int *’ [-Wincompatible-pointer-types]
+  144 |       min_tour = ( unsigned short*) malloc (sizeof (unsigned short) * ncities);
+      |                ^
+make[1]: Circular tsp_sa-mpi.o <- tsp_sa-mpi.o dependency dropped.
+mpicc -c -o savestate-mpi.o -O3 -DNDEBUG -fcommon  -DMPI -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include savestate.c
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include   -c -o initialize.o initialize.c
+mpicc -c -o tsp_sa-mpi.o -O3 -DNDEBUG -fcommon  -DMPI -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -DUSR=\"sebramirezvi\" -DMACHINE=\"dn017\" -DCOMPILER=\"gcc\" -DFLAGS=\"optimized\" -DVERS=\"3.1\"  tsp_sa.c
+mpicc -o tsp_sa.mpi -O3 -DNDEBUG -fcommon  -DMPI edge_wt.o move-mpi.o tsp_sa-mpi.o  savestate-mpi.o initialize.o ../lam/distributions.o  ../lam/lsa-mpi.o ../lam/error.o ../lam/random.o -lm
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include   -c -o calc_ave_error_bar.o calc_ave_error_bar.c
+mpicc -o calc_ave_error_bar -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include calc_ave_error_bar.o -lm 
+mpicc -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include   -c -o curve_fit.o curve_fit.c
+mpicc -o curve_fit -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include curve_fit.o -lm 
+mpicc -c -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include -DUSR=\"sebramirezvi\" -DMACHINE=\"dn017\" -DCOMPILER=\"gcc\" -DFLAGS=\"optimized\" -DVERS=\"3.1\"   printscore.c
+mpicc -o printscore -O3 -DNDEBUG -fcommon  -I. -I../lam -I/usr/local/include printscore.o initialize.o edge_wt.o ../lam/error.o -lm
+make[1]: Leaving directory '/gpfs/home/sebramirezvi/hierarchical_tsp_select_opts_3/tsp'

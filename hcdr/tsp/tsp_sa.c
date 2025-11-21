@@ -566,8 +566,10 @@ double InitialMove (int argc, char ** argv, int opt_index,
 	           /* generate initial tour and get initial energy */
         InitTSP(instance_infile); /* this routine is in move.c */
         *p_chisq = StartTour(); /* this routine is in move.c */
-	i_temp   = InitMoves(param_infile);  /* set initial temperature and */
-	/*initialize random number generator and annealing parameters */
+
+ /* set initial temperature and initialize random number generator and *
+  * annealing parameters                                               */
+	i_temp   = InitMoves(param_infile, state_ptr->tune.tau); 
         InitDistribution(param_infile);   /* initialize distribution stuff */
         fclose(param_infile);
         fclose(instance_infile);
@@ -751,11 +753,8 @@ void RestoreState(char *statefile, NucStatePtr state_ptr, double *p_chisq)
   }
  InitTSP(instance_infile);
  in_tune = ReadTune(param_infile);
- _temp   = InitMoves(param_infile);
  InitDistribution(param_infile);
- fclose(param_infile);
- fclose(instance_infile);
-  state_ptr->tune.lambda              = in_tune.lambda;
+ state_ptr->tune.lambda              = in_tune.lambda;
   state_ptr->tune.lambda_mem_length_u = in_tune.lambda_mem_length_u;
   state_ptr->tune.lambda_mem_length_v = in_tune.lambda_mem_length_v;
   state_ptr->tune.control             = in_tune.control;
@@ -767,7 +766,11 @@ void RestoreState(char *statefile, NucStatePtr state_ptr, double *p_chisq)
 #ifdef MPI
   state_ptr->tune.mix_interval        = in_tune.mix_interval;
 #endif
-    RestoreMoves(move_ptr);
+
+ _temp   = InitMoves(param_infile, state_ptr->tune.tau);
+ fclose(param_infile);
+ fclose(instance_infile);
+     RestoreMoves(move_ptr);
     RestoreLamstats(stats);
   if (time_flag)
     RestoreTimes(delta);
@@ -1038,9 +1041,10 @@ AParms ReadAParameters(FILE *fp)
 
   fscanf(fp,"%*s\n");                         /* advance past title line 4 */
 
+  /* Minor code change: interval is going to have to 
+   * be a multiple of 100 now. Sorry. */
   if ( 1 != fscanf(fp, "%d\n", &(l_aparms.interval)) )
     error("ReadAParameters: error reading interval");
-  
   /* precompute gain/interval - Seb RV 2025 Nov 14*/
   l_aparms.gain_div_interval/=(double)l_aparms.interval;
   return l_aparms;

@@ -237,7 +237,7 @@ for ( i=0; i<ncities; i++)
  *              it then returns the initial temperature to the caller      *
  ***************************************************************************/
 
-double InitMoves(FILE *fp)
+double InitMoves(FILE *fp, int Tau)
 {  /* begin init moves */
    unsigned short *xsubj; 
    long seedval;
@@ -249,6 +249,9 @@ double InitMoves(FILE *fp)
 /* read annealing paramters */
 
   ap           = ReadAParameters(fp);       /* ap: static annealing params */
+  if(ap.interval % Tau || !ap.interval){
+    error("Reading Annealing Parameters: interval not divisible by tau");
+  }
   ap.max_count = 0; 
 
   if ( equil == 1 )   /* read equilibration params and put them into lsa.c */
@@ -379,7 +382,7 @@ if (tour_debug)
 * return the difference in cost curr_cost-new_cost*
 **************************************************/
 
-double GenerateMove(void)
+double GenerateMove()
 {  /* begin GenerateMove*/
   /* delta_e is the change in energy returned as function value */
  /* it is the difference in the cost of the current tour and the new tour*/
@@ -395,25 +398,23 @@ double GenerateMove(void)
 
 
 /* increase counters */
-
-  nhits++;
+/* SRV Nov 19 2025 - switching nhits to be after nsweeps *
+ * in order to force UpdateControl to only occur after   *
+ * communication steps.                                  */
   acc_tab.hits++;
 
-#ifdef MPI                               
+  nhits++;
   nsweeps=  (nhits) * lam_group_size;   /* calculate number of sweeps */
-#else
-  nsweeps = nhits;
-#endif
-
 /* update statistics if interval passed & at least one sweep completed */
 
 /* Seb RV August 1st 2024: Changed this to happen after nsweeps is 
  * calculated. It is what happens in the CDR code so, idk I don't really
  * think it makes a difference. */
 
-  if ( !(nsweeps % ap.interval) && (nsweeps) ) {
-    UpdateControl();                        
-  }
+ /* Removed all of this logic entirely. UpdateControl can only occur 
+ during an update_stats step. Seb RV Nov 19 2025 */
+
+
 /* now generate new micro state */
 /* ThermoDynamics! (/s) Seb RV 2024 */
 /*************************************************************************
@@ -525,22 +526,24 @@ void AcceptMove(void)
  *                  this function prints prolix stuff, if required (-p)    *
  ***************************************************************************/
 
-void UpdateControl(void) 
+void UpdateControl(uint16_t *m_success) 
 {
-  double     x;                   /* temp variable to manipulate theta_bar */
+
+  
+/* Seb RV Nov 20 2025 */
+/* Now UpdateControl has to manually check for itself.    * 
+ *                                                         *
+ * UpdateControl gets called every proc_tau moves, which   *
+ * is a multiple of tau, so even if nsweeps=nhits this can *
+ * can only be called during an UpdateStats step.           */
+if (myid == 0){
+}
+  if (!(nsweeps % ap.interval) ){
 
   FILE       *prolixptr;                            /* prolix file pointer */
 
-#ifdef MPI
-  long       hits;                     /* used for pooling number of moves */ 
-  long       success;              /* used for pooling number of successes */
-  long       tmp;                  /* temp array for MPI_Allreduce sendbuf */
-
-
 /* open prolix file for appending new move stats */
-
   if ( myid == 0 ) {
-#endif
     if ( prolix ) {
       prolixptr = fopen(prolixfile, "a");
       if ( !prolixptr ) {
@@ -548,36 +551,25 @@ void UpdateControl(void)
 	exit(1);
       }
     }
-#ifdef MPI
   }
 
 /* if parallel, pool the accpetance statistics */
+/* Or how about we don't add two unneccessary, *
+ * expensive MPI_Allreduces.                   */
 
-  hits    = (long)acc_tab.hits;
-  success = (long)acc_tab.success;
- 
-  tmp = hits;
-  MPI_Allreduce(&tmp, &hits, 1, MPI_LONG, MPI_SUM, *my_comm);
-
-  tmp = success;
-  MPI_Allreduce(&tmp, &success, 1, MPI_LONG, MPI_SUM, *my_comm);
-
-  acc_tab.hits    = (unsigned char)hits;
-  acc_tab.success = (unsigned char)success;
-#endif
 
 /* calculate acceptance ratio (for all parameters) and adjust theta_bar    *
  * according to the gain (see King-Wai's thesis, p. 23)                    *
- *
- * Removed uneccessary acc_tab->acc_ratio computations                     */
-  
-
-  /*   x  = log(acc_tab->theta_bar);  from fly/lj magnitude */
+ *                                                                         *
+ * Removed uneccessary acc_tab->acc_ratio computations                     *
+ * I did this way earlier but I didn't date it - SRV NOV 20 2025           */
 
   /* tsp no log - we do not need x */
-  acc_tab.theta_bar+= ap.gain_div_interval * (double)((int) acc_tab.success-44);
-
-   /*  acc_tab->theta_bar = exp(x);  from fly/lj magnitude */
+  acc_tab.theta_bar+= ap.gain_div_interval * (double)((int) *m_success-44);
+  /* for all the trouble this stupid fucking function gave us
+   * in trying to not make assumptions about sweeps, they
+   * use this magic number that assumes we have 1 sweep every 100
+   * moves. Whatever. SRV Nov 19 2025*/
 
     if ( acc_tab.theta_bar > neighbor_max ) {
       acc_tab.theta_bar = neighbor_max;
@@ -589,31 +581,25 @@ void UpdateControl(void)
 /* if -p: root node prints prolix information to prolix file */
 
   if ( prolix ) {
-#ifdef MPI          
     if ( myid == 0 ) { 
-#endif
       fprintf(prolixptr, "nsteps = %8d bar = %10.8e hits = %6d ",
 	      nhits, acc_tab.theta_bar, acc_tab.hits ); 
       fprintf(prolixptr, "success = %6d acc_ratio = %5.2f\n", 
 	      acc_tab.success, (double)acc_tab.success/(double)acc_tab.hits);
-#ifdef MPI
     }
-#endif
   }
 
 /* reset acceptance stats for next 'interval' */
 
-  acc_tab.hits    = 0;
-  acc_tab.success = 0;
+  *m_success=0; 
 
 /* close prolix file, if necessary */
 
-#ifdef MPI
   if ( myid == 0 )
-#endif
     if ( prolix )
       fclose(prolixptr);
   
+}
 }
 
 

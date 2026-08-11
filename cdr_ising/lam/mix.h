@@ -1,0 +1,14 @@
+#include <mpi.h>
+/* For Faster Mean and Variance computations */
+typedef struct{
+  double mean;
+  double vari;
+  int success ;
+} mean_vari_succ;
+
+
+extern MPI_Datatype MPI_Meanvarisucc;
+extern MPI_Op MPI_Meanvarisucc_sum;
+
+void Meanvarisucc_MPI_Init();
+void Meanvarisucc_MPI_Free();

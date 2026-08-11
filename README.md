@@ -42,7 +42,7 @@ exist.
 In the examples, the parallel files should work for 20 processors with
 either hcdr or cdr.
 
-For hcdr runs, you must run with
+For [h]cdr runs, you must run with
 
 mpirun -np 20 [dir]/cdr_ising/ising/ising_sa.mpi parallel_tsp_example
 

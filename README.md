@@ -27,3 +27,16 @@ about using such state files.
 
 As of now, it is required that both a .instance and .params file
 exist.
+
+In the examples, the parallel files should work for 20 processors with
+either hcdr or cdr.
+
+For hcdr runs, you must run with
+
+mpirun -np 20 [dir]/cdr_ising/ising/ising_sa.mpi parallel_tsp_example
+
+where [dir] is where you keep this repository.
+The program will automatically locate the instance and param files, and produce
+parallel_tsp_example.log, parallel_tsp_example.output, and if you fix state
+files it will also produce a set of parallel_tsp_example_XX.state
+for each of the processors used.

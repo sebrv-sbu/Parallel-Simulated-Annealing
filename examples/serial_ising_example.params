@@ -1,0 +1,41 @@
+$annealing_input
+seed_for_random_number_generator:
+3888453875
+start_temperature
+5000000
+gain_for_jump_size_control:
+1
+interval:
+100
+$$
+
+$tune_parameters
+lambda__lambdamemu_lambdamemv_control:
+.000005 200. 1000. 1.
+initmoves_tau_freezecount_Sskip:
+100000 100 100 1
+criterion:
+0.0
+mix_interval__glob_interval__ngroups:
+100 100 5          
+score_criterion
+2
+$$
+
+$equilibrate
+end_T:
+5000000
+fix_T_skip:
+2000
+fix_T_step:
+100000
+$$
+
+
+$distribution_parameters
+dist_type(1=exp_2=uni_3=nor_4=lor_5=lor2_6=poi_7=gen_8=stdnor_9=par_10=nor2):
+1 2
+$$
+
+
+$tsp_instance

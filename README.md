@@ -1,16 +1,27 @@
 For any of the directories:
+
 #cd $dir;
+
 #make -f Makefile.tsp veryclean deps tsp
+
 or 
+
 #make -f Makefile.ising veryclean deps ising
 
 then, the executable is in 
+
 tsp/tsp_sa
+
 or
+
 tsp/tsp_sa.mpi
+
 or
+
 ising/ising_sa
+
 or 
+
 ising/ising_sa.mpi
 
 With the mpi suffix if it is a parallel run, no mpi suffix for serial runs.
